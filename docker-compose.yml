@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: crypto_postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-crypto_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-crypto_pass}
+      POSTGRES_DB: ${DB_NAME:-crypto_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-crypto_user} -d ${DB_NAME:-crypto_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Superset setup can be complex; we will use the official image but it requires initialization
+  superset:
+    image: apache/superset:latest
+    container_name: crypto_superset
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-your_secret_key_here}
+      SQLALCHEMY_DATABASE_URI: postgresql+psycopg2://${DB_USER:-crypto_user}:${DB_PASSWORD:-crypto_pass}@postgres:5432/${DB_NAME:-crypto_db}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      bash -c "superset fab create-admin --username admin --firstname Superset --lastname Admin --email admin@example.com --password admin &&
+               superset db upgrade &&
+               superset init &&
+               gunicorn -w 2 --timeout 120 -b  0.0.0.0:8088 --limit-request-line 0 --limit-request-field_size 0 \"superset.app:create_app()\""
+
+  api:
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile
+    container_name: crypto_api
+    command: uvicorn api.server:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_USER=${DB_USER:-crypto_user}
+      - DB_PASSWORD=${DB_PASSWORD:-crypto_pass}
+      - DB_NAME=${DB_NAME:-crypto_db}
+      - DB_HOST=postgres
+      - DB_PORT=5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile
+    container_name: crypto_streamlit
+    command: streamlit run dashboards/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    environment:
+      - DB_USER=${DB_USER:-crypto_user}
+      - DB_PASSWORD=${DB_PASSWORD:-crypto_pass}
+      - DB_NAME=${DB_NAME:-crypto_db}
+      - DB_HOST=postgres
+      - DB_PORT=5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
+    volumes:
+      - .:/app
+
+volumes:
+  postgres_data:
